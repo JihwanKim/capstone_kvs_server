@@ -1,3 +1,6 @@
+#!/usr/bin/python
+#-*- coding: utf-8 -*-
+
 import tornado.httpserver
 import tornado.ioloop
 import tornado.options
@@ -10,8 +13,9 @@ import setuptools
 import tokenize
 import os 
 import mysql.connector as mariadb
+import boto3
 #https://mariadb.com/resources/blog/how-to-connect-python-programs-to-mariadb/
-mariadb_connection = mariadb.connect(pool_name = "abc",user='kvs', password='pcu_kvs', database='kvs_test', pool_size=3)
+mariadb_connection = mariadb.connect(pool_size=3)
 cursor = mariadb_connection.cursor()
 
 
@@ -45,10 +49,7 @@ def query(sql, params):
 
 # import pymysql
 # # Connect to the database
-# connection = pymysql.connect(host='localhost',
-#                              user='kvs',
-#                              password='pcu_kvs',
-#                              db='kvs_test',
+# connection = pymysql.connect(
 #                              charset='utf8mb4',
 #                              cursorclass=pymysql.cursors.DictCursor)
 
@@ -99,6 +100,23 @@ class MainHandler(tornado.web.RequestHandler):
 
 # 사진 전송
 class PictureHandler(tornado.web.RequestHandler):
+  def get(self):
+    set_header(self)
+    file_name = self.get_argument("file_name")
+    fileName='test/' + file_name
+    bucket='kvs-for-pcu-capstone'
+    client=boto3.client('rekognition')
+    response = client.detect_faces(
+      Image={'S3Object':{'Bucket':bucket,'Name':fileName}},
+      Attributes=['ALL', ]
+      )
+    print('Detected labels for ' + fileName)    
+    dic = dict()
+    for emotion in response['FaceDetails'][0]['Emotions']:
+      dic.update({emotion['Type']:str(emotion['Confidence'])})
+    self.write(tornado.escape.json_encode({"result":0, "picture_result":dic}))
+
+
   def post(self):
     set_header(self)
     #print(self.request.files['file'])
@@ -106,10 +124,20 @@ class PictureHandler(tornado.web.RequestHandler):
     fileinfo = self.request.files['file'][0]
     original_fname = fileinfo['filename']
     current_time = int(time.time() * 1000)
-    output_file = open(dir_path + "/uploads/" + str(current_time) + "_" + original_fname, 'wb')
+    new_file_name =  str(current_time) + "_" + original_fname
+    output_file = open(dir_path + "/uploads/" + new_file_name, 'wb')
     output_file.write(fileinfo['body'])
-    query("INSERT INTO files (file_name) VALUES (%s)", (original_fname,))
-    mariadb_connection.commit()
+    
+    #query("INSERT INTO files (file_name) VALUES (%s)", (original_fname,))
+    # Create an S3 client
+    s3 = boto3.client('s3')
+    
+    bucket_name = 'kvs-for-pcu-capstone'
+
+    # Uploads the given file using a managed uploader, which will split up large
+    # files automatically and upload parts in parallel.
+    s3.upload_file(dir_path + "/uploads/" + new_file_name, bucket_name,"test/" +  new_file_name)
+    #mariadb_connection.commit()
     self.write(tornado.escape.json_encode({"result":0}))
 
 # 통계 가져오기
@@ -121,7 +149,7 @@ class StatsHandler(tornado.web.RequestHandler):
     start_at = self.get_argument("start_at")
     self.write(tornado.escape.json_encode({"result":0}))
 
-
+    
 class SettingHandler(tornado.web.RequestHandler):
   def get(self):
     set_header(self)
@@ -130,11 +158,39 @@ class SettingHandler(tornado.web.RequestHandler):
     set_header(self)
     self.write("put setting")
 
-application = tornado.web.Application([(r"/main", MainHandler),
-  (r"/picture", PictureHandler),
-  (r"/stats", StatsHandler),
-  (r"/setting", SettingHandler),
-  (r"/auth", AuthHandler),])
+class TestHandler(tornado.web.RequestHandler):
+  def get(self):
+    set_header(self)
+    cursor = mariadb_connection.cursor()
+    try:
+      cursor.execute("SELECT  * FROM kvs.test")
+    except mariadb.Error as error :
+      print("Error: {}".format(error))
+    ls = list()
+    for idx, a in cursor:
+      ls.append({"idx":idx, "a":a})
+
+    self.write(tornado.escape.json_encode({"result":0, "list":ls}))
+  def put(self):
+    set_header(self)
+    self.write(tornado.escape.json_encode({"result":0}))
+
+class PingHandler(tornado.web.RequestHandler):
+  def get(self):
+    set_header(self)
+    self.write(tornado.escape.json_encode({"result":0}))
+
+application = tornado.web.Application(
+    [
+        (r"/test", TestHandler),
+        (r"/main", MainHandler),
+        (r"/picture", PictureHandler),
+        (r"/stats", StatsHandler),
+        (r"/setting", SettingHandler),
+        (r"/auth", AuthHandler),
+        (r"/ping", PingHandler),
+        ]
+    )
 
 if __name__ == "__main__":
   application.listen(8888)
